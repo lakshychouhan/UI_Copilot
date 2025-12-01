@@ -90,20 +90,6 @@ export default function App() {
   const API_BASE_URL =
     import.meta.env.VITE_API_BASE_URL || "http://localhost:8000"
 
-  const reactScope = useMemo(
-    () => ({
-      React,
-      ReactDOM,
-      // expose common hooks so generated code can use them
-      useState: React.useState,
-      useEffect: React.useEffect,
-      useMemo: React.useMemo,
-      useCallback: React.useCallback,
-      useRef: React.useRef,
-    }),
-    [],
-  )
-
   const isDark = theme === "dark"
 
   const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"))
