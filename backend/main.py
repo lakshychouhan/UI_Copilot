@@ -21,17 +21,23 @@ if OPENAI_API_KEY:
 
 
 # ------------- FastAPI app + CORS -------------
-
 app = FastAPI()
 
-# Allow your Vite frontend (http://localhost:5173) to call this backend
+# Add all origins that should be allowed to call the API
+origins = [
+    "http://localhost:5173",                 # Vite dev
+    "http://localhost:4173",                 # Vite preview (optional)
+    "https://ui-copilot-2.onrender.com",     # your frontend on Render
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["*"],   # or ["POST"] if you want to be strict
     allow_headers=["*"],
 )
+
 
 
 # ------------- Pydantic models -------------
