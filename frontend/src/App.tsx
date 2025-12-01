@@ -67,10 +67,21 @@ function normalizeGeneratedCode(raw: string): string {
   // Remove simple TS-style "as Type" casts
   code = code.replace(/\s+as\s+[A-Za-z_][A-Za-z0-9_<>]*/g, "")
 
+  // Remove very simple parameter / variable type annotations: "name: Type"
+  // This is a heuristic to handle common TS patterns without fully parsing.
+  code = code.replace(/([A-Za-z0-9_$])\s*:\s*[^)=,]+/g, "$1")
+
   // Best‑effort downgrade of optional chaining and nullish coalescing so they don't crash the parser
   // NOTE: This is heuristic and not a perfect semantic transform, but it's enough for preview safety.
   code = code.replace(/\?\./g, ".")
   code = code.replace(/\?\?/g, "||")
+
+  // Replace JSX fragments <>...</> with React.Fragment, which Buble understands
+  code = code.replace(/<>\s*/g, "<React.Fragment>")
+  code = code.replace(/<\/\s*>/g, "</React.Fragment>")
+
+  // Remove numeric separators like 1_000 → 1000
+  code = code.replace(/(\d)_(?=\d)/g, "$1")
 
   return code.trim()
 }
