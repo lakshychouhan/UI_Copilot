@@ -67,10 +67,6 @@ function normalizeGeneratedCode(raw: string): string {
   // Remove simple TS-style "as Type" casts
   code = code.replace(/\s+as\s+[A-Za-z_][A-Za-z0-9_<>]*/g, "")
 
-  // Remove very simple parameter / variable type annotations: "name: Type"
-  // This is a heuristic to handle common TS patterns without fully parsing.
-  code = code.replace(/([A-Za-z0-9_$])\s*:\s*[^)=,]+/g, "$1")
-
   // Best‑effort downgrade of optional chaining and nullish coalescing so they don't crash the parser
   // NOTE: This is heuristic and not a perfect semantic transform, but it's enough for preview safety.
   code = code.replace(/\?\./g, ".")
