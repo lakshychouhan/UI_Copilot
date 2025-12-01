@@ -32,18 +32,19 @@ function normalizeGeneratedCode(raw: string): string {
     code = fenceMatch[1]
   }
 
-  // 2. Drop import lines (react-live can't handle them)
+  // 2. Drop import lines and leftover fences
   code = code
     .split("\n")
     .filter((line) => {
       const trimmed = line.trim()
       if (trimmed.startsWith("```")) return false
       if (trimmed.startsWith("import ")) return false
+      if (trimmed.startsWith("export {")) return false
       return true
     })
     .join("\n")
 
-  // 3. Normalize export default
+  // 3. Normalize export default → plain function
   code = code.replace(
     /export\s+default\s+function\s+GeneratedComponent\s*\(/,
     "function GeneratedComponent(",
@@ -53,11 +54,26 @@ function normalizeGeneratedCode(raw: string): string {
   return code.trim()
 }
 
+// Small helper to avoid invisible text in preview
+function adaptCodeForTheme(code: string, isDark: boolean): string {
+  if (!code) return code
+
+  if (isDark) {
+    // In dark mode, avoid pure black text / pure white backgrounds
+    return code
+      .replace(/text-black/g, "text-slate-50")
+      .replace(/bg-white/g, "bg-slate-900")
+  } else {
+    // In light mode, avoid pure white text / super dark backgrounds
+    return code
+      .replace(/text-white/g, "text-slate-900")
+      .replace(/bg-slate-900/g, "bg-slate-100")
+  }
+}
 
 type Theme = "dark" | "light"
 
 export default function App() {
-  
   const [theme, setTheme] = useState<Theme>("dark")
   const [prompt, setPrompt] = useState(
     "Give me a 3-card responsive grid.\nReturn only valid React component code.\nDo not wrap in fences.\nDefine: export default function GeneratedComponent() { ... }",
@@ -70,12 +86,15 @@ export default function App() {
   const [history, setHistory] = useState<string[]>([])
   const [historyIndex, setHistoryIndex] = useState<number>(-1)
   const [previewError, setPreviewError] = useState<string | null>(null)
-  // inside App component, near other hooks
+
+  const API_BASE_URL =
+    import.meta.env.VITE_API_BASE_URL || "http://localhost:8000"
+
   const reactScope = useMemo(
     () => ({
       React,
       ReactDOM,
-      // expose common hooks so generated code can use `useState`, `useEffect`, etc.
+      // expose common hooks so generated code can use them
       useState: React.useState,
       useEffect: React.useEffect,
       useMemo: React.useMemo,
@@ -85,7 +104,6 @@ export default function App() {
     [],
   )
 
-
   const isDark = theme === "dark"
 
   const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"))
@@ -93,7 +111,10 @@ export default function App() {
   const commitToHistory = useCallback(
     (code: string) => {
       setHistory((prev) => {
-        const base = historyIndex >= 0 && historyIndex < prev.length ? prev.slice(0, historyIndex + 1) : prev
+        const base =
+          historyIndex >= 0 && historyIndex < prev.length
+            ? prev.slice(0, historyIndex + 1)
+            : prev
         const next = [...base, code]
         const newIndex = next.length - 1
         setHistoryIndex(newIndex)
@@ -102,8 +123,6 @@ export default function App() {
     },
     [historyIndex],
   )
-  const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
   const handleGenerate = async () => {
     setLoading(true)
@@ -115,7 +134,7 @@ export default function App() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ prompt }),
-      });
+      })
       const data = await res.json()
       if (data.error) {
         console.error("Backend error:", data.error, data.reasons)
@@ -154,7 +173,7 @@ export default function App() {
     setVisionLoading(true)
     setPreviewError(null)
     try {
-      const res = await fetch("http://localhost:8000/vision-ui", {
+      const res = await fetch(`${API_BASE_URL}/vision-ui`, {
         method: "POST",
         body: form,
       })
@@ -197,11 +216,19 @@ export default function App() {
     commitToHistory(editableCode)
   }, [editableCode, commitToHistory])
 
+  // This is what actually gets executed by react-live
   const previewCode = useMemo(() => {
     if (!editableCode.trim()) return ""
+
     const cleaned = normalizeGeneratedCode(editableCode)
-    return `${cleaned}\nrender(<GeneratedComponent />);`.trim()
-  }, [editableCode])
+    const themed = adaptCodeForTheme(cleaned, isDark)
+
+    // react-live pattern: define component, then return JSX as last expression
+    // GeneratedComponent is defined inside "themed"
+    return `${themed}
+
+<GeneratedComponent />`
+  }, [editableCode, isDark])
 
   const isAnyLoading = loading || visionLoading
 
@@ -538,9 +565,16 @@ export default function App() {
                     animate={{ opacity: 1, y: 0 }}
                     className="h-full"
                   >
-                    <LiveProvider code={previewCode} noInline scope={reactScope}>
-                    <div className={`rounded-xl p-4 min-h-[300px] ${ isDark ? "bg-slate-950 text-slate-50" : "bg-slate-50 text-slate-900"}`}>
-                      
+                    <LiveProvider
+                      code={previewCode}
+                      scope={reactScope}
+                      noInline={false}
+                    >
+                      <div
+                        className={`rounded-xl p-4 min-h-[300px] ${
+                          isDark ? "bg-slate-950" : "bg-slate-50"
+                        }`}
+                      >
                         <LivePreview />
                       </div>
                       <LiveError
