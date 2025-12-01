@@ -102,16 +102,20 @@ export default function App() {
     },
     [historyIndex],
   )
+  const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
   const handleGenerate = async () => {
     setLoading(true)
     setPreviewError(null)
     try {
-      const res = await fetch("http://localhost:8000/generate-ui", {
+      const res = await fetch(`${API_BASE_URL}/generate-ui`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({ prompt }),
-      })
+      });
       const data = await res.json()
       if (data.error) {
         console.error("Backend error:", data.error, data.reasons)
