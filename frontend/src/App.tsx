@@ -51,6 +51,27 @@ function normalizeGeneratedCode(raw: string): string {
   )
   code = code.replace(/export\s+default\s+/g, "")
 
+  // 4. Strip some common TypeScript / advanced syntax that react-live (Buble) can't parse
+  code = code
+    .split("\n")
+    .filter((line) => {
+      const trimmed = line.trim()
+      if (trimmed.startsWith("type ")) return false
+      if (trimmed.startsWith("interface ")) return false
+      if (trimmed.startsWith("enum ")) return false
+      if (trimmed.startsWith("import type")) return false
+      return true
+    })
+    .join("\n")
+
+  // Remove simple TS-style "as Type" casts
+  code = code.replace(/\s+as\s+[A-Za-z_][A-Za-z0-9_<>]*/g, "")
+
+  // Best‑effort downgrade of optional chaining and nullish coalescing so they don't crash the parser
+  // NOTE: This is heuristic and not a perfect semantic transform, but it's enough for preview safety.
+  code = code.replace(/\?\./g, ".")
+  code = code.replace(/\?\?/g, "||")
+
   return code.trim()
 }
 
