@@ -1,646 +1,425 @@
-"use client"
+"use client";
 
-import React, { useMemo, useState, useCallback, type ChangeEvent } from "react"
-import { LiveProvider, LivePreview, LiveError } from "react-live"
-import Editor from "@monaco-editor/react"
-import * as ReactDOM from "react-dom"
-import { motion, AnimatePresence } from "framer-motion"
+import React, {
+  useMemo,
+  useState,
+  useCallback,
+  type ChangeEvent,
+} from "react";
+import { LiveProvider, LivePreview, LiveError } from "react-live";
+import Editor from "@monaco-editor/react";
+import * as ReactDOM from "react-dom";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   Sun,
   Moon,
   Upload,
-  Sparkles,
-  ImageIcon,
-  Undo2,
-  Redo2,
-  Save,
+  Wand2,
+  Loader2,
+  AlertCircle,
   Code2,
   Eye,
-  AlertCircle,
-  Loader2,
-  Wand2,
-} from "lucide-react"
+} from "lucide-react";
 
+// -------------------- React Live scope --------------------
+// This is CRITICAL in production: React must be in scope
+const reactScope = {
+  React,
+  ReactDOM,
+  motion,
+};
+
+// -------------------- Helpers --------------------
+
+const DEFAULT_SNIPPET = `() => (
+  <div className="flex items-center justify-center min-h-[200px] bg-slate-100 text-slate-900">
+    <p className="text-sm text-slate-600">Generated UI will appear here</p>
+  </div>
+)`;
+
+/**
+ * Normalize the raw code from the model into something react-live can execute.
+ * - Strip ``` fences
+ * - Remove "export default function GeneratedComponent() { ... }" if present
+ * - Ensure final result is *an expression* (typically a component arrow function)
+ */
 function normalizeGeneratedCode(raw: string): string {
-  if (!raw) return ""
+  if (!raw) return DEFAULT_SNIPPET;
 
-  let code = raw
+  let code = raw.trim();
 
-  // 1. If there's a fenced block, keep only the content inside the first one
-  const fenceMatch = code.match(/```(?:[a-zA-Z]+)?\s*([\s\S]*?)```/)
+  // 1. Keep only first fenced block if present
+  const fenceMatch = code.match(/```(?:[a-zA-Z]+)?\s*([\s\S]*?)```/);
   if (fenceMatch) {
-    code = fenceMatch[1]
+    code = fenceMatch[1].trim();
   }
 
-  // 2. Drop import lines and leftover fences
-  code = code
-    .split("\n")
-    .filter((line) => {
-      const trimmed = line.trim()
-      if (trimmed.startsWith("```")) return false
-      if (trimmed.startsWith("import ")) return false
-      if (trimmed.startsWith("export {")) return false
-      return true
-    })
-    .join("\n")
-
-  // 3. Normalize export default → plain function
+  // 2. Remove "export default" if present – react-live doesn’t need module syntax
   code = code.replace(
     /export\s+default\s+function\s+GeneratedComponent\s*\(/,
-    "function GeneratedComponent(",
-  )
-  code = code.replace(/export\s+default\s+/g, "")
+    "function GeneratedComponent("
+  );
 
-  return code.trim()
+  // 3. If we still have a plain component declaration, transform it into an expression
+  //    that react-live can use as the last expression.
+  //
+  //    Example:
+  //    function GeneratedComponent() { return (<div/>); }
+  //    =>
+  //    (() => <GeneratedComponent />)
+  if (/function\s+GeneratedComponent\s*\(/.test(code)) {
+    code = `${code}
+
+(() => <GeneratedComponent />)
+    `.trim();
+    return code;
+  }
+
+  // 4. If the model returned plain JSX (like "<div>...</div>"),
+  //    wrap it into an arrow function expression.
+  if (!code.startsWith("(") && !code.startsWith("() =>") && code.includes("<")) {
+    code = `() => (
+${code}
+)`;
+  }
+
+  return code || DEFAULT_SNIPPET;
 }
 
-// Small helper to avoid invisible text in preview
-function adaptCodeForTheme(code: string, isDark: boolean): string {
-  if (!code) return code
-
+/**
+ * Crude "contrast fix" so we avoid completely invisible text.
+ * - In light mode: avoid text-white
+ * - In dark mode: avoid text-black
+ */
+function applyThemeContrastFix(code: string, isDark: boolean): string {
+  if (!code) return code;
   if (isDark) {
-    // In dark mode, avoid pure black text / pure white backgrounds
-    return code
-      .replace(/text-black/g, "text-slate-50")
-      .replace(/bg-white/g, "bg-slate-900")
+    return code.replace(/text-black/g, "text-slate-50");
   } else {
-    // In light mode, avoid pure white text / super dark backgrounds
-    return code
-      .replace(/text-white/g, "text-slate-900")
-      .replace(/bg-slate-900/g, "bg-slate-100")
+    return code.replace(/text-white/g, "text-slate-900");
   }
 }
 
-type Theme = "dark" | "light"
+// -------------------- Main App --------------------
 
-export default function App() {
-  const [theme, setTheme] = useState<Theme>("dark")
-  const [prompt, setPrompt] = useState(
-    "Give me a 3-card responsive grid.\nReturn only valid React component code.\nDo not wrap in fences.\nDefine: export default function GeneratedComponent() { ... }",
-  )
-  const [generatedCode, setGeneratedCode] = useState<string>("")
-  const [editableCode, setEditableCode] = useState<string>("")
-  const [loading, setLoading] = useState(false)
-  const [screenshotFile, setScreenshotFile] = useState<File | null>(null)
-  const [visionLoading, setVisionLoading] = useState(false)
-  const [history, setHistory] = useState<string[]>([])
-  const [historyIndex, setHistoryIndex] = useState<number>(-1)
-  const [previewError, setPreviewError] = useState<string | null>(null)
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
-  const API_BASE_URL =
-    import.meta.env.VITE_API_BASE_URL || "http://localhost:8000"
+function App() {
+  const [isDark, setIsDark] = useState(true);
+  const [prompt, setPrompt] = useState("");
+  const [screenshotFile, setScreenshotFile] = useState<File | null>(null);
+  const [screenshotPreview, setScreenshotPreview] = useState<string | null>(
+    null
+  );
+  const [generatedCode, setGeneratedCode] = useState(DEFAULT_SNIPPET);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<"code" | "preview">("preview");
 
-  const reactScope = useMemo(
-    () => ({
-      React,
-      ReactDOM,
-      // expose common hooks so generated code can use them
-      useState: React.useState,
-      useEffect: React.useEffect,
-      useMemo: React.useMemo,
-      useCallback: React.useCallback,
-      useRef: React.useRef,
-    }),
-    [],
-  )
+  // Normalize + theme adjust for react-live
+  const previewCode = useMemo(() => {
+    const normalized = normalizeGeneratedCode(generatedCode);
+    return applyThemeContrastFix(normalized, isDark);
+  }, [generatedCode, isDark]);
 
-  const isDark = theme === "dark"
+  const handleToggleTheme = () => setIsDark((prev) => !prev);
 
-  const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"))
+  const handlePromptChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
+    setPrompt(e.target.value);
+  };
 
-  const commitToHistory = useCallback(
-    (code: string) => {
-      setHistory((prev) => {
-        const base =
-          historyIndex >= 0 && historyIndex < prev.length
-            ? prev.slice(0, historyIndex + 1)
-            : prev
-        const next = [...base, code]
-        const newIndex = next.length - 1
-        setHistoryIndex(newIndex)
-        return next
-      })
-    },
-    [historyIndex],
-  )
+  const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
 
-  const handleGenerate = async () => {
-    setLoading(true)
-    setPreviewError(null)
+    setScreenshotFile(file);
+    setError(null);
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      setScreenshotPreview(reader.result as string);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleGenerate = useCallback(async () => {
     try {
+      setIsLoading(true);
+      setError(null);
+
+      const formData = new FormData();
+      formData.append("prompt", prompt || "");
+      if (screenshotFile) {
+        formData.append("screenshot", screenshotFile);
+      }
+
       const res = await fetch(`${API_BASE_URL}/generate-ui`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ prompt }),
-      })
-      const data = await res.json()
-      if (data.error) {
-        console.error("Backend error:", data.error, data.reasons)
-        setPreviewError(data.error)
+        body: formData,
+      });
+
+      if (!res.ok) {
+        console.error("Backend error:", await res.text());
+        throw new Error("Backend error while generating UI");
       }
-      if (data.code) {
-        const code = data.code as string
-        setGeneratedCode(code)
-        setEditableCode(code)
-        commitToHistory(code)
-      } else {
-        setGeneratedCode("")
-        setEditableCode("")
-      }
-    } catch (err) {
-      console.error(err)
-      setPreviewError("Error calling backend. Check console for details.")
+
+      const data = await res.json();
+      // expecting { code: string }
+      const rawCode: string = data.code ?? "";
+      setGeneratedCode(rawCode || DEFAULT_SNIPPET);
+      setActiveTab("preview");
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message || "Failed to generate UI");
     } finally {
-      setLoading(false)
+      setIsLoading(false);
     }
-  }
-
-  const handleScreenshotFileChange = (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0] || null
-    setScreenshotFile(file)
-  }
-
-  const handleScreenshotGenerate = async () => {
-    if (!screenshotFile) {
-      setPreviewError("Please upload a screenshot first.")
-      return
-    }
-
-    const form = new FormData()
-    form.append("file", screenshotFile)
-    setVisionLoading(true)
-    setPreviewError(null)
-    try {
-      const res = await fetch(`${API_BASE_URL}/vision-ui`, {
-        method: "POST",
-        body: form,
-      })
-      const data = await res.json()
-      if (data.code) {
-        setGeneratedCode(data.code)
-        setEditableCode(data.code)
-        commitToHistory(data.code)
-      } else {
-        setPreviewError("Vision model did not return code.")
-      }
-    } catch (err) {
-      console.error(err)
-      setPreviewError("Error processing screenshot.")
-    } finally {
-      setVisionLoading(false)
-    }
-  }
-
-  const handleUndo = useCallback(() => {
-    setHistoryIndex((idx) => {
-      if (idx <= 0) return idx
-      const newIdx = idx - 1
-      setEditableCode(history[newIdx])
-      return newIdx
-    })
-  }, [history])
-
-  const handleRedo = useCallback(() => {
-    setHistoryIndex((idx) => {
-      if (idx < 0 || idx >= history.length - 1) return idx
-      const newIdx = idx + 1
-      setEditableCode(history[newIdx])
-      return newIdx
-    })
-  }, [history])
-
-  const handleCommitSnapshot = useCallback(() => {
-    if (!editableCode.trim()) return
-    commitToHistory(editableCode)
-  }, [editableCode, commitToHistory])
-
-  // This is what actually gets executed by react-live
-  const previewCode = useMemo(() => {
-    if (!editableCode.trim()) return ""
-
-    const cleaned = normalizeGeneratedCode(editableCode)
-    const themed = adaptCodeForTheme(cleaned, isDark)
-
-    // react-live pattern: define component, then return JSX as last expression
-    // GeneratedComponent is defined inside "themed"
-    return `${themed}
-
-<GeneratedComponent />`
-  }, [editableCode, isDark])
-
-  const isAnyLoading = loading || visionLoading
+  }, [prompt, screenshotFile]);
 
   return (
     <div
-      className={`min-h-screen transition-colors duration-500 ${
-        isDark
-          ? "bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-100"
-          : "bg-gradient-to-br from-slate-50 via-white to-slate-100 text-slate-900"
+      className={`min-h-screen transition-colors ${
+        isDark ? "bg-slate-950 text-slate-50" : "bg-slate-50 text-slate-900"
       }`}
     >
-      {/* Animated background orbs */}
-      <div className="fixed inset-0 overflow-hidden pointer-events-none">
-        <motion.div
-          animate={{
-            x: [0, 100, 0],
-            y: [0, -50, 0],
-          }}
-          transition={{
-            duration: 20,
-            repeat: Number.POSITIVE_INFINITY,
-            ease: "easeInOut",
-          }}
-          className={`absolute -top-40 -left-40 w-80 h-80 rounded-full blur-3xl ${
-            isDark ? "bg-indigo-500/10" : "bg-indigo-500/20"
-          }`}
-        />
-        <motion.div
-          animate={{
-            x: [0, -80, 0],
-            y: [0, 60, 0],
-          }}
-          transition={{
-            duration: 25,
-            repeat: Number.POSITIVE_INFINITY,
-            ease: "easeInOut",
-          }}
-          className={`absolute -bottom-40 -right-40 w-96 h-96 rounded-full blur-3xl ${
-            isDark ? "bg-purple-500/10" : "bg-purple-500/15"
-          }`}
-        />
-      </div>
-
-      <div className="relative z-10 flex flex-col min-h-screen">
+      <div className="max-w-6xl mx-auto px-4 py-6 space-y-4">
         {/* Header */}
-        <motion.header
-          initial={{ y: -20, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          className={`border-b px-6 py-4 flex justify-between items-center backdrop-blur-xl ${
-            isDark ? "border-slate-800/50 bg-slate-900/50" : "border-slate-200/50 bg-white/50"
-          }`}
-        >
-          <div className="flex items-center gap-3">
-            <motion.div
-              whileHover={{ rotate: 180 }}
-              transition={{ duration: 0.5 }}
-              className="p-2 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600"
-            >
-              <Wand2 className="w-5 h-5 text-white" />
-            </motion.div>
-            <h1 className="text-xl font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">
-              AI UI Copilot
-            </h1>
+        <header className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <div className="h-8 w-8 rounded-xl bg-gradient-to-br from-indigo-500 to-cyan-400 flex items-center justify-center">
+              <SparklesMini />
+            </div>
+            <div>
+              <h1 className="font-semibold tracking-tight">UI Copilot</h1>
+              <p className="text-xs text-slate-400">
+                Describe your UI, get live React code + preview
+              </p>
+            </div>
           </div>
-          <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={toggleTheme}
-            className={`p-2.5 rounded-xl transition-all duration-300 ${
-              isDark
-                ? "bg-slate-800 hover:bg-slate-700 text-amber-400"
-                : "bg-slate-200 hover:bg-slate-300 text-slate-700"
-            }`}
-          >
-            <AnimatePresence mode="wait">
-              {isDark ? (
-                <motion.div
-                  key="sun"
-                  initial={{ rotate: -90, opacity: 0 }}
-                  animate={{ rotate: 0, opacity: 1 }}
-                  exit={{ rotate: 90, opacity: 0 }}
-                  transition={{ duration: 0.2 }}
-                >
-                  <Sun className="w-5 h-5" />
-                </motion.div>
-              ) : (
-                <motion.div
-                  key="moon"
-                  initial={{ rotate: 90, opacity: 0 }}
-                  animate={{ rotate: 0, opacity: 1 }}
-                  exit={{ rotate: -90, opacity: 0 }}
-                  transition={{ duration: 0.2 }}
-                >
-                  <Moon className="w-5 h-5" />
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </motion.button>
-        </motion.header>
 
-        {/* Main Content */}
-        <main className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-6 p-6">
-          {/* Left Panel */}
-          <motion.div
-            initial={{ x: -20, opacity: 0 }}
-            animate={{ x: 0, opacity: 1 }}
-            transition={{ delay: 0.1 }}
-            className="flex flex-col gap-5"
+          <button
+            onClick={handleToggleTheme}
+            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full border border-slate-600/40 bg-slate-900/40 hover:bg-slate-800/60"
           >
-            {/* Prompt Input */}
+            {isDark ? (
+              <>
+                <Sun className="h-3 w-3" />
+                Light
+              </>
+            ) : (
+              <>
+                <Moon className="h-3 w-3" />
+                Dark
+              </>
+            )}
+          </button>
+        </header>
+
+        {/* Layout */}
+        <div className="grid md:grid-cols-2 gap-4 items-stretch">
+          {/* Left: controls */}
+          <section className="space-y-3">
             <div
-              className={`rounded-2xl p-1 ${
+              className={`rounded-2xl border p-3 text-sm ${
                 isDark
-                  ? "bg-gradient-to-br from-indigo-500/20 to-purple-500/20"
-                  : "bg-gradient-to-br from-indigo-500/10 to-purple-500/10"
+                  ? "border-slate-800 bg-slate-900/60"
+                  : "border-slate-200 bg-white"
               }`}
             >
+              <label className="block text-xs font-medium mb-1">
+                Describe your UI
+              </label>
               <textarea
-                className={`w-full h-36 rounded-xl p-4 text-sm outline-none resize-none transition-colors ${
-                  isDark
-                    ? "bg-slate-900 border-0 placeholder:text-slate-500 focus:ring-2 focus:ring-indigo-500/50"
-                    : "bg-white border-0 placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-500/50"
-                }`}
                 value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                placeholder="Describe the UI you want to generate..."
+                onChange={handlePromptChange}
+                rows={5}
+                placeholder="Example: A card with product image, price, and 'Add to cart' button..."
+                className={`w-full resize-none rounded-xl border px-3 py-2 text-xs outline-none ${
+                  isDark
+                    ? "bg-slate-950/60 border-slate-800 focus:border-indigo-500"
+                    : "bg-slate-50 border-slate-200 focus:border-indigo-500"
+                }`}
               />
             </div>
 
-            {/* Action Buttons */}
-            <div className="flex flex-wrap items-center gap-3">
-              <motion.button
-                whileHover={{ scale: 1.02, y: -2 }}
-                whileTap={{ scale: 0.98 }}
-                onClick={handleGenerate}
-                disabled={loading}
-                className="group relative px-5 py-2.5 rounded-xl font-medium text-sm text-white overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <div className="absolute inset-0 bg-gradient-to-r from-indigo-600 to-purple-600 transition-all group-hover:from-indigo-500 group-hover:to-purple-500" />
-                <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <div className="absolute inset-0 bg-gradient-to-r from-indigo-400 to-purple-400 blur-xl" />
-                </div>
-                <span className="relative flex items-center gap-2">
-                  {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-                  {loading ? "Generating..." : "Generate from Prompt"}
-                </span>
-              </motion.button>
-
-              <label
-                className={`group cursor-pointer inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all duration-300 ${
-                  isDark
-                    ? "bg-slate-800 hover:bg-slate-700 text-slate-300"
-                    : "bg-slate-200 hover:bg-slate-300 text-slate-700"
-                }`}
-              >
-                <Upload className="w-4 h-4 group-hover:scale-110 transition-transform" />
-                {screenshotFile ? "Change Screenshot" : "Upload Screenshot"}
-                <input type="file" accept="image/*" onChange={handleScreenshotFileChange} className="hidden" />
-              </label>
-
-              <motion.button
-                whileHover={{ scale: 1.02, y: -2 }}
-                whileTap={{ scale: 0.98 }}
-                onClick={handleScreenshotGenerate}
-                disabled={!screenshotFile || visionLoading}
-                className="group relative px-5 py-2.5 rounded-xl font-medium text-sm text-white overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <div className="absolute inset-0 bg-gradient-to-r from-emerald-600 to-teal-600 transition-all group-hover:from-emerald-500 group-hover:to-teal-500" />
-                <span className="relative flex items-center gap-2">
-                  {visionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ImageIcon className="w-4 h-4" />}
-                  {visionLoading ? "Processing..." : "Generate from Screenshot"}
-                </span>
-              </motion.button>
-            </div>
-
-            {/* Generated Code (read-only) */}
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ delay: 0.2 }}
-              className={`rounded-2xl overflow-hidden ${isDark ? "bg-slate-900/80" : "bg-white/80"} backdrop-blur-sm`}
-            >
-              <div
-                className={`flex items-center gap-2 px-4 py-3 border-b ${
-                  isDark ? "border-slate-800" : "border-slate-200"
-                }`}
-              >
-                <Code2 className="w-4 h-4 text-indigo-400" />
-                <h2 className="text-sm font-semibold">Generated Code</h2>
-                <span
-                  className={`text-xs px-2 py-0.5 rounded-full ${
-                    isDark ? "bg-slate-800 text-slate-400" : "bg-slate-200 text-slate-500"
-                  }`}
-                >
-                  read-only
-                </span>
-              </div>
-              <pre className={`p-4 text-xs overflow-auto max-h-40 ${isDark ? "text-slate-300" : "text-slate-700"}`}>
-                {generatedCode || "// Click Generate to see code"}
-              </pre>
-            </motion.div>
-
-            {/* Inline Editor */}
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ delay: 0.3 }}
-              className={`rounded-2xl overflow-hidden ${isDark ? "bg-slate-900/80" : "bg-white/80"} backdrop-blur-sm`}
-            >
-              <div
-                className={`flex items-center justify-between px-4 py-3 border-b ${
-                  isDark ? "border-slate-800" : "border-slate-200"
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <Code2 className="w-4 h-4 text-purple-400" />
-                  <h2 className="text-sm font-semibold">Inline Editor</h2>
-                </div>
-                <div className="flex gap-2">
-                  <motion.button
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                    onClick={handleUndo}
-                    disabled={historyIndex <= 0}
-                    className={`p-2 rounded-lg transition-all disabled:opacity-30 ${
-                      isDark ? "bg-slate-800 hover:bg-slate-700" : "bg-slate-200 hover:bg-slate-300"
-                    }`}
-                  >
-                    <Undo2 className="w-4 h-4" />
-                  </motion.button>
-                  <motion.button
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                    onClick={handleRedo}
-                    disabled={historyIndex < 0 || historyIndex >= history.length - 1}
-                    className={`p-2 rounded-lg transition-all disabled:opacity-30 ${
-                      isDark ? "bg-slate-800 hover:bg-slate-700" : "bg-slate-200 hover:bg-slate-300"
-                    }`}
-                  >
-                    <Redo2 className="w-4 h-4" />
-                  </motion.button>
-                  <motion.button
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                    onClick={handleCommitSnapshot}
-                    disabled={!editableCode.trim()}
-                    className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-gradient-to-r from-indigo-600 to-purple-600 text-white text-xs font-medium disabled:opacity-30"
-                  >
-                    <Save className="w-3.5 h-3.5" />
-                    Save
-                  </motion.button>
-                </div>
-              </div>
-              <div className="h-64">
-                <Editor
-                  height="100%"
-                  defaultLanguage="javascript"
-                  theme={isDark ? "vs-dark" : "light"}
-                  value={editableCode}
-                  onChange={(value) => setEditableCode(value ?? "")}
-                  options={{
-                    minimap: { enabled: false },
-                    fontSize: 13,
-                    scrollBeyondLastLine: false,
-                    automaticLayout: true,
-                    padding: { top: 16 },
-                    lineNumbers: "on",
-                    renderLineHighlight: "all",
-                    bracketPairColorization: { enabled: true },
-                  }}
-                />
-              </div>
-            </motion.div>
-          </motion.div>
-
-          {/* Right Panel - Live Preview */}
-          <motion.div
-            initial={{ x: 20, opacity: 0 }}
-            animate={{ x: 0, opacity: 1 }}
-            transition={{ delay: 0.2 }}
-            className={`rounded-2xl overflow-hidden flex flex-col ${
-              isDark ? "bg-slate-900/80" : "bg-white/80"
-            } backdrop-blur-sm`}
-          >
             <div
-              className={`flex items-center gap-2 px-4 py-3 border-b ${
-                isDark ? "border-slate-800" : "border-slate-200"
+              className={`rounded-2xl border p-3 text-sm flex flex-col gap-2 ${
+                isDark
+                  ? "border-slate-800 bg-slate-900/60"
+                  : "border-slate-200 bg-white"
               }`}
             >
-              <Eye className="w-4 h-4 text-emerald-400" />
-              <h2 className="text-sm font-semibold">Live Preview</h2>
-              {isAnyLoading && (
-                <motion.div
-                  initial={{ opacity: 0, scale: 0.8 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  className="flex items-center gap-1.5 ml-auto"
-                >
-                  <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
-                  <span className="text-xs text-slate-400">Processing...</span>
-                </motion.div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium">Screenshot (optional)</span>
+                <label className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full border cursor-pointer hover:opacity-90 transition">
+                  <Upload className="h-3 w-3" />
+                  Upload image
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={handleFileChange}
+                  />
+                </label>
+              </div>
+
+              {screenshotPreview && (
+                <div className="relative mt-1">
+                  <img
+                    src={screenshotPreview}
+                    alt="Screenshot preview"
+                    className="w-full rounded-xl border border-slate-700/40 object-cover max-h-40"
+                  />
+                </div>
               )}
             </div>
 
-            <div className="flex-1 p-4 overflow-auto">
+            <button
+              onClick={handleGenerate}
+              disabled={isLoading}
+              className="inline-flex items-center justify-center gap-2 text-sm px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-500 to-cyan-500 text-white font-medium shadow-md disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Generating UI...
+                </>
+              ) : (
+                <>
+                  <Wand2 className="h-4 w-4" />
+                  Generate UI
+                </>
+              )}
+            </button>
+
+            {error && (
+              <div className="flex items-start gap-2 text-xs text-red-400 bg-red-950/40 border border-red-800 rounded-xl px-3 py-2">
+                <AlertCircle className="h-4 w-4 mt-px" />
+                <p>{error}</p>
+              </div>
+            )}
+          </section>
+
+          {/* Right: code + preview */}
+          <section
+            className={`rounded-2xl border flex flex-col ${
+              isDark
+                ? "border-slate-800 bg-slate-900/70"
+                : "border-slate-200 bg-white"
+            }`}
+          >
+            {/* Tabs */}
+            <div className="flex items-center justify-between px-3 pt-2 pb-1 border-b border-slate-700/40 text-xs">
+              <div className="inline-flex items-center rounded-full bg-slate-800/40 p-1">
+                <button
+                  onClick={() => setActiveTab("preview")}
+                  className={`inline-flex items-center gap-1 px-2 py-1 rounded-full transition ${
+                    activeTab === "preview"
+                      ? "bg-slate-900 text-slate-50"
+                      : "text-slate-400"
+                  }`}
+                >
+                  <Eye className="h-3 w-3" />
+                  Preview
+                </button>
+                <button
+                  onClick={() => setActiveTab("code")}
+                  className={`inline-flex items-center gap-1 px-2 py-1 rounded-full transition ${
+                    activeTab === "code"
+                      ? "bg-slate-900 text-slate-50"
+                      : "text-slate-400"
+                  }`}
+                >
+                  <Code2 className="h-3 w-3" />
+                  Code
+                </button>
+              </div>
+
+              <span className="text-[10px] text-slate-500">
+                React + Tailwind live playground
+              </span>
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 min-h-[320px]">
               <AnimatePresence mode="wait">
-                {isAnyLoading && !previewCode ? (
-                  <motion.div
-                    key="loading"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    className="flex-1 h-full flex flex-col items-center justify-center gap-4"
-                  >
-                    <motion.div
-                      animate={{ rotate: 360 }}
-                      transition={{ duration: 2, repeat: Number.POSITIVE_INFINITY, ease: "linear" }}
-                      className="relative"
-                    >
-                      <div className="w-16 h-16 rounded-full border-4 border-slate-700 border-t-indigo-500" />
-                      <motion.div
-                        animate={{ scale: [1, 1.2, 1] }}
-                        transition={{ duration: 1.5, repeat: Number.POSITIVE_INFINITY }}
-                        className="absolute inset-0 flex items-center justify-center"
-                      >
-                        <Sparkles className="w-6 h-6 text-indigo-400" />
-                      </motion.div>
-                    </motion.div>
-                    <p className="text-sm text-slate-400">Generating preview...</p>
-                  </motion.div>
-                ) : previewCode ? (
+                {activeTab === "preview" ? (
                   <motion.div
                     key="preview"
-                    initial={{ opacity: 0, y: 10 }}
+                    initial={{ opacity: 0, y: 8 }}
                     animate={{ opacity: 1, y: 0 }}
-                    className="h-full"
+                    exit={{ opacity: 0, y: -8 }}
+                    transition={{ duration: 0.15 }}
+                    className={`h-full`}
                   >
                     <LiveProvider
                       code={previewCode}
                       scope={reactScope}
-                      noInline={false}
+                      noInline
                     >
                       <div
                         className={`rounded-xl p-4 min-h-[300px] ${
-                          isDark ? "bg-slate-950" : "bg-slate-50"
+                          isDark
+                            ? "bg-slate-950 text-slate-50"
+                            : "bg-slate-50 text-slate-900"
                         }`}
                       >
                         <LivePreview />
                       </div>
                       <LiveError
-                        className={`mt-4 p-4 rounded-xl text-sm flex items-start gap-3 ${
-                          isDark
-                            ? "bg-red-500/10 border border-red-500/20 text-red-300"
-                            : "bg-red-50 border border-red-200 text-red-600"
-                        }`}
+                        className="mt-2 text-[11px] text-red-400 px-3 pb-2"
                       />
                     </LiveProvider>
                   </motion.div>
                 ) : (
                   <motion.div
-                    key="empty"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    className="flex-1 h-full flex flex-col items-center justify-center gap-4 py-20"
+                    key="code"
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -8 }}
+                    transition={{ duration: 0.15 }}
+                    className="h-full"
                   >
-                    <motion.div
-                      animate={{ y: [0, -8, 0] }}
-                      transition={{ duration: 2, repeat: Number.POSITIVE_INFINITY }}
-                      className={`p-4 rounded-2xl ${isDark ? "bg-slate-800" : "bg-slate-200"}`}
-                    >
-                      <Wand2 className="w-8 h-8 text-slate-400" />
-                    </motion.div>
-                    <p className="text-sm text-slate-400 text-center">Generate something to see the preview</p>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-
-              {/* Error Toast */}
-              <AnimatePresence>
-                {previewError && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 20, scale: 0.95 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: 20, scale: 0.95 }}
-                    className={`mt-4 p-4 rounded-xl flex items-start gap-3 ${
-                      isDark ? "bg-red-500/10 border border-red-500/20" : "bg-red-50 border border-red-200"
-                    }`}
-                  >
-                    <div className={`p-1.5 rounded-lg ${isDark ? "bg-red-500/20" : "bg-red-100"}`}>
-                      <AlertCircle className="w-4 h-4 text-red-400" />
-                    </div>
-                    <div className="flex-1">
-                      <p className={`text-sm font-medium ${isDark ? "text-red-300" : "text-red-600"}`}>Error</p>
-                      <p className={`text-xs mt-1 ${isDark ? "text-red-400/80" : "text-red-500"}`}>{previewError}</p>
-                    </div>
-                    <button
-                      onClick={() => setPreviewError(null)}
-                      className={`p-1 rounded-lg transition-colors ${
-                        isDark ? "hover:bg-red-500/20" : "hover:bg-red-100"
-                      }`}
-                    >
-                      <span className="sr-only">Dismiss</span>
-                      <svg className="w-4 h-4 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
+                    <Editor
+                      height="320px"
+                      defaultLanguage="tsx"
+                      theme={isDark ? "vs-dark" : "light"}
+                      value={generatedCode}
+                      onChange={(value) => setGeneratedCode(value || "")}
+                      options={{
+                        fontSize: 12,
+                        minimap: { enabled: false },
+                        scrollBeyondLastLine: false,
+                        wordWrap: "on",
+                      }}
+                    />
                   </motion.div>
                 )}
               </AnimatePresence>
             </div>
-          </motion.div>
-        </main>
+          </section>
+        </div>
       </div>
     </div>
-  )
+  );
 }
+
+// Tiny sparkles icon (so we don't pull another lib)
+function SparklesMini() {
+  return (
+    <svg
+      className="h-4 w-4 text-white"
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        d="M12 2l1.3 3.8L17 7.3l-3.7 1.5L12 13l-1.3-4.2L7 7.3l3.7-1.5L12 2zM6 14l.7 2 1.8.7-1.8.7L6 19.5l-.7-2.1L3.5 16l1.8-.7L6 14zm12 0l.7 2 1.8.7-1.8.7L18 19.5l-.7-2.1L15.5 16l1.8-.7L18 14z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
+export default App;
