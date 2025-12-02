@@ -1,9 +1,8 @@
 "use client"
 
-import React, { useMemo, useState, useCallback, type ChangeEvent } from "react"
+import React, { useMemo, useState, useCallback, useEffect, type ChangeEvent } from "react"
 import { LiveProvider, LivePreview, LiveError } from "react-live"
 import Editor from "@monaco-editor/react"
-import * as ReactDOM from "react-dom"
 import { motion, AnimatePresence } from "framer-motion"
 import {
   Sun,
@@ -19,90 +18,38 @@ import {
   AlertCircle,
   Loader2,
   Wand2,
+  X,
 } from "lucide-react"
-const ReactForLive = React
+
+// Set this to your deployed backend URL (e.g., "https://your-api.com")
+const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000"
+
 function normalizeGeneratedCode(raw: string): string {
   if (!raw) return ""
-
   let code = raw
-
-  // 1. If there's a fenced block, keep only the content inside the first one
-  const fenceMatch = code.match(/```(?:[a-zA-Z]+)?\s*([\s\S]*?)```/)
-  if (fenceMatch) {
-    code = fenceMatch[1]
-  }
-
-  // 2. Drop import lines and leftover fences
-  code = code
     .split("\n")
     .filter((line) => {
       const trimmed = line.trim()
       if (trimmed.startsWith("```")) return false
       if (trimmed.startsWith("import ")) return false
-      if (trimmed.startsWith("export {")) return false
       return true
     })
     .join("\n")
 
-  // 3. Normalize export default → plain function
-  code = code.replace(
-    /export\s+default\s+function\s+GeneratedComponent\s*\(/,
-    "function GeneratedComponent(",
-  )
+  code = code.replace(/export\s+default\s+function\s+GeneratedComponent\s*\(/, "function GeneratedComponent(")
   code = code.replace(/export\s+default\s+/g, "")
-
-  // 4. Strip some common TypeScript / advanced syntax that react-live (Buble) can't parse
-  code = code
-    .split("\n")
-    .filter((line) => {
-      const trimmed = line.trim()
-      if (trimmed.startsWith("type ")) return false
-      if (trimmed.startsWith("interface ")) return false
-      if (trimmed.startsWith("enum ")) return false
-      if (trimmed.startsWith("import type")) return false
-      return true
-    })
-    .join("\n")
-
-  // Remove simple TS-style "as Type" casts
-  code = code.replace(/\s+as\s+[A-Za-z_][A-Za-z0-9_<>]*/g, "")
-
-  // Best‑effort downgrade of optional chaining and nullish coalescing so they don't crash the parser
-  // NOTE: This is heuristic and not a perfect semantic transform, but it's enough for preview safety.
-  code = code.replace(/\?\./g, ".")
-  code = code.replace(/\?\?/g, "||")
-
-  // Replace JSX fragments <>...</> with React.Fragment, which Buble understands
-  code = code.replace(/<>\s*/g, "<React.Fragment>")
-  code = code.replace(/<\/\s*>/g, "</React.Fragment>")
-
-  // Remove numeric separators like 1_000 → 1000
-  code = code.replace(/(\d)_(?=\d)/g, "$1")
-
   return code.trim()
-}
-
-// Small helper to avoid invisible text in preview
-function adaptCodeForTheme(code: string, isDark: boolean): string {
-  if (!code) return code
-
-  if (isDark) {
-    // In dark mode, avoid pure black text / pure white backgrounds
-    return code
-      .replace(/text-black/g, "text-slate-50")
-      .replace(/bg-white/g, "bg-slate-900")
-  } else {
-    // In light mode, avoid pure white text / super dark backgrounds
-    return code
-      .replace(/text-white/g, "text-slate-900")
-      .replace(/bg-slate-900/g, "bg-slate-100")
-  }
 }
 
 type Theme = "dark" | "light"
 
 export default function App() {
-  const [theme, setTheme] = useState<Theme>("dark")
+  const [theme, setTheme] = useState<Theme>(() => {
+    if (typeof window !== "undefined") {
+      return (localStorage.getItem("ui-copilot-theme") as Theme) || "dark"
+    }
+    return "dark"
+  })
   const [prompt, setPrompt] = useState(
     "Give me a 3-card responsive grid.\nReturn only valid React component code.\nDo not wrap in fences.\nDefine: export default function GeneratedComponent() { ... }",
   )
@@ -115,20 +62,18 @@ export default function App() {
   const [historyIndex, setHistoryIndex] = useState<number>(-1)
   const [previewError, setPreviewError] = useState<string | null>(null)
 
-  const API_BASE_URL =
-    import.meta.env.VITE_API_BASE_URL || "http://localhost:8000"
-
   const isDark = theme === "dark"
+
+  useEffect(() => {
+    localStorage.setItem("ui-copilot-theme", theme)
+  }, [theme])
 
   const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"))
 
   const commitToHistory = useCallback(
     (code: string) => {
       setHistory((prev) => {
-        const base =
-          historyIndex >= 0 && historyIndex < prev.length
-            ? prev.slice(0, historyIndex + 1)
-            : prev
+        const base = historyIndex >= 0 && historyIndex < prev.length ? prev.slice(0, historyIndex + 1) : prev
         const next = [...base, code]
         const newIndex = next.length - 1
         setHistoryIndex(newIndex)
@@ -144,11 +89,15 @@ export default function App() {
     try {
       const res = await fetch(`${API_BASE_URL}/generate-ui`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt }),
       })
+
+      const contentType = res.headers.get("content-type")
+      if (!contentType || !contentType.includes("application/json")) {
+        throw new Error(`Server returned ${res.status}: Expected JSON but got ${contentType || "unknown"}`)
+      }
+
       const data = await res.json()
       if (data.error) {
         console.error("Backend error:", data.error, data.reasons)
@@ -165,7 +114,7 @@ export default function App() {
       }
     } catch (err) {
       console.error(err)
-      setPreviewError("Error calling backend. Check console for details.")
+      setPreviewError(err instanceof Error ? err.message : "Error calling backend. Check console for details.")
     } finally {
       setLoading(false)
     }
@@ -191,6 +140,12 @@ export default function App() {
         method: "POST",
         body: form,
       })
+
+      const contentType = res.headers.get("content-type")
+      if (!contentType || !contentType.includes("application/json")) {
+        throw new Error(`Server returned ${res.status}: Expected JSON but got ${contentType || "unknown"}`)
+      }
+
       const data = await res.json()
       if (data.code) {
         setGeneratedCode(data.code)
@@ -201,7 +156,7 @@ export default function App() {
       }
     } catch (err) {
       console.error(err)
-      setPreviewError("Error processing screenshot.")
+      setPreviewError(err instanceof Error ? err.message : "Error processing screenshot.")
     } finally {
       setVisionLoading(false)
     }
@@ -230,19 +185,11 @@ export default function App() {
     commitToHistory(editableCode)
   }, [editableCode, commitToHistory])
 
-  // This is what actually gets executed by react-live
   const previewCode = useMemo(() => {
     if (!editableCode.trim()) return ""
-
     const cleaned = normalizeGeneratedCode(editableCode)
-    const themed = adaptCodeForTheme(cleaned, isDark)
-
-    // react-live pattern: define component, then return JSX as last expression
-    // GeneratedComponent is defined inside "themed"
-    return `${themed}
-
-<GeneratedComponent />`
-  }, [editableCode, isDark])
+    return `${cleaned}\nrender(<GeneratedComponent />);`.trim()
+  }, [editableCode])
 
   const isAnyLoading = loading || visionLoading
 
@@ -257,29 +204,15 @@ export default function App() {
       {/* Animated background orbs */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none">
         <motion.div
-          animate={{
-            x: [0, 100, 0],
-            y: [0, -50, 0],
-          }}
-          transition={{
-            duration: 20,
-            repeat: Number.POSITIVE_INFINITY,
-            ease: "easeInOut",
-          }}
+          animate={{ x: [0, 100, 0], y: [0, -50, 0] }}
+          transition={{ duration: 20, repeat: Number.POSITIVE_INFINITY, ease: "easeInOut" }}
           className={`absolute -top-40 -left-40 w-80 h-80 rounded-full blur-3xl ${
             isDark ? "bg-indigo-500/10" : "bg-indigo-500/20"
           }`}
         />
         <motion.div
-          animate={{
-            x: [0, -80, 0],
-            y: [0, 60, 0],
-          }}
-          transition={{
-            duration: 25,
-            repeat: Number.POSITIVE_INFINITY,
-            ease: "easeInOut",
-          }}
+          animate={{ x: [0, -80, 0], y: [0, 60, 0] }}
+          transition={{ duration: 25, repeat: Number.POSITIVE_INFINITY, ease: "easeInOut" }}
           className={`absolute -bottom-40 -right-40 w-96 h-96 rounded-full blur-3xl ${
             isDark ? "bg-purple-500/10" : "bg-purple-500/15"
           }`}
@@ -426,16 +359,12 @@ export default function App() {
               className={`rounded-2xl overflow-hidden ${isDark ? "bg-slate-900/80" : "bg-white/80"} backdrop-blur-sm`}
             >
               <div
-                className={`flex items-center gap-2 px-4 py-3 border-b ${
-                  isDark ? "border-slate-800" : "border-slate-200"
-                }`}
+                className={`flex items-center gap-2 px-4 py-3 border-b ${isDark ? "border-slate-800" : "border-slate-200"}`}
               >
                 <Code2 className="w-4 h-4 text-indigo-400" />
                 <h2 className="text-sm font-semibold">Generated Code</h2>
                 <span
-                  className={`text-xs px-2 py-0.5 rounded-full ${
-                    isDark ? "bg-slate-800 text-slate-400" : "bg-slate-200 text-slate-500"
-                  }`}
+                  className={`text-xs px-2 py-0.5 rounded-full ${isDark ? "bg-slate-800 text-slate-400" : "bg-slate-200 text-slate-500"}`}
                 >
                   read-only
                 </span>
@@ -453,9 +382,7 @@ export default function App() {
               className={`rounded-2xl overflow-hidden ${isDark ? "bg-slate-900/80" : "bg-white/80"} backdrop-blur-sm`}
             >
               <div
-                className={`flex items-center justify-between px-4 py-3 border-b ${
-                  isDark ? "border-slate-800" : "border-slate-200"
-                }`}
+                className={`flex items-center justify-between px-4 py-3 border-b ${isDark ? "border-slate-800" : "border-slate-200"}`}
               >
                 <div className="flex items-center gap-2">
                   <Code2 className="w-4 h-4 text-purple-400" />
@@ -467,9 +394,7 @@ export default function App() {
                     whileTap={{ scale: 0.95 }}
                     onClick={handleUndo}
                     disabled={historyIndex <= 0}
-                    className={`p-2 rounded-lg transition-all disabled:opacity-30 ${
-                      isDark ? "bg-slate-800 hover:bg-slate-700" : "bg-slate-200 hover:bg-slate-300"
-                    }`}
+                    className={`p-2 rounded-lg transition-all disabled:opacity-30 ${isDark ? "bg-slate-800 hover:bg-slate-700" : "bg-slate-200 hover:bg-slate-300"}`}
                   >
                     <Undo2 className="w-4 h-4" />
                   </motion.button>
@@ -478,9 +403,7 @@ export default function App() {
                     whileTap={{ scale: 0.95 }}
                     onClick={handleRedo}
                     disabled={historyIndex < 0 || historyIndex >= history.length - 1}
-                    className={`p-2 rounded-lg transition-all disabled:opacity-30 ${
-                      isDark ? "bg-slate-800 hover:bg-slate-700" : "bg-slate-200 hover:bg-slate-300"
-                    }`}
+                    className={`p-2 rounded-lg transition-all disabled:opacity-30 ${isDark ? "bg-slate-800 hover:bg-slate-700" : "bg-slate-200 hover:bg-slate-300"}`}
                   >
                     <Redo2 className="w-4 h-4" />
                   </motion.button>
@@ -523,138 +446,88 @@ export default function App() {
             initial={{ x: 20, opacity: 0 }}
             animate={{ x: 0, opacity: 1 }}
             transition={{ delay: 0.2 }}
-            className={`rounded-2xl overflow-hidden flex flex-col ${
-              isDark ? "bg-slate-900/80" : "bg-white/80"
-            } backdrop-blur-sm`}
+            className={`rounded-2xl overflow-hidden flex flex-col ${isDark ? "bg-slate-900/80" : "bg-white/80"} backdrop-blur-sm`}
           >
             <div
-              className={`flex items-center gap-2 px-4 py-3 border-b ${
-                isDark ? "border-slate-800" : "border-slate-200"
-              }`}
+              className={`flex items-center gap-2 px-4 py-3 border-b ${isDark ? "border-slate-800" : "border-slate-200"}`}
             >
               <Eye className="w-4 h-4 text-emerald-400" />
               <h2 className="text-sm font-semibold">Live Preview</h2>
-              {isAnyLoading && (
-                <motion.div
-                  initial={{ opacity: 0, scale: 0.8 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  className="flex items-center gap-1.5 ml-auto"
-                >
-                  <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
-                  <span className="text-xs text-slate-400">Processing...</span>
-                </motion.div>
-              )}
             </div>
 
             <div className="flex-1 p-4 overflow-auto">
-              <AnimatePresence mode="wait">
-                {isAnyLoading && !previewCode ? (
-                  <motion.div
-                    key="loading"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    className="flex-1 h-full flex flex-col items-center justify-center gap-4"
-                  >
-                    <motion.div
-                      animate={{ rotate: 360 }}
-                      transition={{ duration: 2, repeat: Number.POSITIVE_INFINITY, ease: "linear" }}
-                      className="relative"
-                    >
-                      <div className="w-16 h-16 rounded-full border-4 border-slate-700 border-t-indigo-500" />
-                      <motion.div
-                        animate={{ scale: [1, 1.2, 1] }}
-                        transition={{ duration: 1.5, repeat: Number.POSITIVE_INFINITY }}
-                        className="absolute inset-0 flex items-center justify-center"
-                      >
-                        <Sparkles className="w-6 h-6 text-indigo-400" />
-                      </motion.div>
-                    </motion.div>
-                    <p className="text-sm text-slate-400">Generating preview...</p>
-                  </motion.div>
-                ) : previewCode ? (
-                  <motion.div
-                    key="preview"
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="h-full"
-                  >
-                    <LiveProvider
-                      code={previewCode}
-                      
-                      noInline={false}
-                      scope={{
-                        React: ReactForLive, // 👈 use the “kept-alive” React
-                        ReactDOM,
-                      }}
-                    >
-                      <div
-                        className={`rounded-xl p-4 min-h-[300px] ${
-                          isDark ? "bg-slate-950" : "bg-slate-50"
-                        }`}
-                      >
-                        <LivePreview />
-                      </div>
-                      <LiveError
-                        className={`mt-4 p-4 rounded-xl text-sm flex items-start gap-3 ${
-                          isDark
-                            ? "bg-red-500/10 border border-red-500/20 text-red-300"
-                            : "bg-red-50 border border-red-200 text-red-600"
-                        }`}
-                      />
-                    </LiveProvider>
-                  </motion.div>
-                ) : (
-                  <motion.div
-                    key="empty"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    className="flex-1 h-full flex flex-col items-center justify-center gap-4 py-20"
-                  >
-                    <motion.div
-                      animate={{ y: [0, -8, 0] }}
-                      transition={{ duration: 2, repeat: Number.POSITIVE_INFINITY }}
-                      className={`p-4 rounded-2xl ${isDark ? "bg-slate-800" : "bg-slate-200"}`}
-                    >
-                      <Wand2 className="w-8 h-8 text-slate-400" />
-                    </motion.div>
-                    <p className="text-sm text-slate-400 text-center">Generate something to see the preview</p>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-
               {/* Error Toast */}
               <AnimatePresence>
                 {previewError && (
                   <motion.div
-                    initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                    initial={{ opacity: 0, y: -10, scale: 0.95 }}
                     animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: 20, scale: 0.95 }}
-                    className={`mt-4 p-4 rounded-xl flex items-start gap-3 ${
+                    exit={{ opacity: 0, y: -10, scale: 0.95 }}
+                    className={`mb-4 p-4 rounded-xl flex items-start gap-3 ${
                       isDark ? "bg-red-500/10 border border-red-500/20" : "bg-red-50 border border-red-200"
                     }`}
                   >
-                    <div className={`p-1.5 rounded-lg ${isDark ? "bg-red-500/20" : "bg-red-100"}`}>
-                      <AlertCircle className="w-4 h-4 text-red-400" />
-                    </div>
+                    <AlertCircle
+                      className={`w-5 h-5 flex-shrink-0 mt-0.5 ${isDark ? "text-red-400" : "text-red-500"}`}
+                    />
                     <div className="flex-1">
-                      <p className={`text-sm font-medium ${isDark ? "text-red-300" : "text-red-600"}`}>Error</p>
-                      <p className={`text-xs mt-1 ${isDark ? "text-red-400/80" : "text-red-500"}`}>{previewError}</p>
+                      <p className={`text-sm font-medium ${isDark ? "text-red-300" : "text-red-700"}`}>Error</p>
+                      <p className={`text-xs mt-1 ${isDark ? "text-red-400/80" : "text-red-600"}`}>{previewError}</p>
                     </div>
-                    <button
+                    <motion.button
+                      whileHover={{ scale: 1.1 }}
+                      whileTap={{ scale: 0.9 }}
                       onClick={() => setPreviewError(null)}
-                      className={`p-1 rounded-lg transition-colors ${
-                        isDark ? "hover:bg-red-500/20" : "hover:bg-red-100"
-                      }`}
+                      className={`p-1 rounded-lg transition-colors ${isDark ? "hover:bg-red-500/20 text-red-400" : "hover:bg-red-100 text-red-500"}`}
                     >
-                      <span className="sr-only">Dismiss</span>
-                      <svg className="w-4 h-4 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
+                      <X className="w-4 h-4" />
+                    </motion.button>
                   </motion.div>
                 )}
               </AnimatePresence>
+
+              {isAnyLoading && !previewCode ? (
+                <div className="flex-1 flex flex-col items-center justify-center gap-4 py-20">
+                  <motion.div
+                    animate={{ rotate: 360 }}
+                    transition={{ duration: 2, repeat: Number.POSITIVE_INFINITY, ease: "linear" }}
+                    className="p-4 rounded-full bg-gradient-to-r from-indigo-500 to-purple-500"
+                  >
+                    <Sparkles className="w-6 h-6 text-white" />
+                  </motion.div>
+                  <motion.p
+                    animate={{ opacity: [0.5, 1, 0.5] }}
+                    transition={{ duration: 2, repeat: Number.POSITIVE_INFINITY }}
+                    className={`text-sm ${isDark ? "text-slate-400" : "text-slate-500"}`}
+                  >
+                    Generating preview...
+                  </motion.p>
+                </div>
+              ) : previewCode ? (
+                <LiveProvider code={previewCode} noInline scope={{ React }}>
+                  <div className={`rounded-xl p-4 min-h-[300px] ${isDark ? "bg-slate-950" : "bg-slate-50"}`}>
+                    <LivePreview />
+                  </div>
+                  <LiveError
+                    className={`mt-4 p-4 rounded-xl text-sm flex items-start gap-3 ${
+                      isDark
+                        ? "bg-red-500/10 border border-red-500/20 text-red-300"
+                        : "bg-red-50 border border-red-200 text-red-600"
+                    }`}
+                  />
+                </LiveProvider>
+              ) : (
+                <div className="flex-1 flex flex-col items-center justify-center gap-4 py-20">
+                  <div className={`p-4 rounded-full ${isDark ? "bg-slate-800" : "bg-slate-200"}`}>
+                    <Eye className={`w-8 h-8 ${isDark ? "text-slate-600" : "text-slate-400"}`} />
+                  </div>
+                  <p className={`text-sm text-center ${isDark ? "text-slate-500" : "text-slate-400"}`}>
+                    Generate something or upload a screenshot
+                    <br />
+                    to see the live preview
+                  </p>
+                </div>
+              )}
             </div>
           </motion.div>
         </main>
