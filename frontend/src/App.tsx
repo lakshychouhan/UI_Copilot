@@ -1,15 +1,6 @@
 "use client"
 
-import React, {
-  useMemo,
-  useState,
-  useCallback,
-  useEffect,
-  useRef,
-  type ChangeEvent,
-  createElement,
-  Fragment,
-} from "react"
+import React, { useMemo, useState, useCallback, useEffect, type ChangeEvent } from "react"
 import { LiveProvider, LivePreview, LiveError } from "react-live"
 import Editor from "@monaco-editor/react"
 import { motion, AnimatePresence } from "framer-motion"
@@ -35,14 +26,6 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000"
 
 const reactLiveScope = {
   React,
-  useState,
-  useEffect,
-  useCallback,
-  useMemo,
-  useRef,
-  createElement,
-  Fragment,
-  // Also expose these directly for JSX transformation
   ...React,
 }
 
