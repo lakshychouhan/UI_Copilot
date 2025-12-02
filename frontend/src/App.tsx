@@ -1,6 +1,15 @@
 "use client"
 
-import React, { useMemo, useState, useCallback, useEffect, type ChangeEvent } from "react"
+import React, {
+  useMemo,
+  useState,
+  useCallback,
+  useEffect,
+  useRef,
+  type ChangeEvent,
+  createElement,
+  Fragment,
+} from "react"
 import { LiveProvider, LivePreview, LiveError } from "react-live"
 import Editor from "@monaco-editor/react"
 import { motion, AnimatePresence } from "framer-motion"
@@ -24,6 +33,19 @@ import {
 // Set this to your deployed backend URL (e.g., "https://your-api.com")
 const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000"
 
+const reactLiveScope = {
+  React,
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+  createElement,
+  Fragment,
+  // Also expose these directly for JSX transformation
+  ...React,
+}
+
 function normalizeGeneratedCode(raw: string): string {
   if (!raw) return ""
   let code = raw
@@ -38,6 +60,13 @@ function normalizeGeneratedCode(raw: string): string {
 
   code = code.replace(/export\s+default\s+function\s+GeneratedComponent\s*\(/, "function GeneratedComponent(")
   code = code.replace(/export\s+default\s+/g, "")
+
+  code = code.replace(/\buseState\b(?!\s*:)/g, "React.useState")
+  code = code.replace(/\buseEffect\b(?!\s*:)/g, "React.useEffect")
+  code = code.replace(/\buseCallback\b(?!\s*:)/g, "React.useCallback")
+  code = code.replace(/\buseMemo\b(?!\s*:)/g, "React.useMemo")
+  code = code.replace(/\buseRef\b(?!\s*:)/g, "React.useRef")
+
   return code.trim()
 }
 
@@ -504,17 +533,19 @@ export default function App() {
                   </motion.p>
                 </div>
               ) : previewCode ? (
-                <LiveProvider code={previewCode} noInline scope={{ React }}>
+                <LiveProvider code={previewCode} noInline scope={reactLiveScope}>
                   <div className={`rounded-xl p-4 min-h-[300px] ${isDark ? "bg-slate-950" : "bg-slate-50"}`}>
                     <LivePreview />
                   </div>
-                  <LiveError
-                    className={`mt-4 p-4 rounded-xl text-sm flex items-start gap-3 ${
-                      isDark
-                        ? "bg-red-500/10 border border-red-500/20 text-red-300"
-                        : "bg-red-50 border border-red-200 text-red-600"
-                    }`}
-                  />
+                  <AnimatePresence>
+                    <LiveError
+                      className={`mt-4 p-4 rounded-xl text-sm flex items-start gap-3 ${
+                        isDark
+                          ? "bg-red-500/10 border border-red-500/20 text-red-300"
+                          : "bg-red-50 border border-red-200 text-red-600"
+                      }`}
+                    />
+                  </AnimatePresence>
                 </LiveProvider>
               ) : (
                 <div className="flex-1 flex flex-col items-center justify-center gap-4 py-20">
