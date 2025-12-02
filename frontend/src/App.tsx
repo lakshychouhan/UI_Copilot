@@ -1,6 +1,7 @@
 "use client"
 
-import React, { useMemo, useState, useCallback, useEffect, type ChangeEvent } from "react"
+import * as React from "react"
+import { useMemo, useState, useCallback, useEffect, type ChangeEvent } from "react"
 import { LiveProvider, LivePreview, LiveError } from "react-live"
 import Editor from "@monaco-editor/react"
 import { motion, AnimatePresence } from "framer-motion"
@@ -21,12 +22,26 @@ import {
   X,
 } from "lucide-react"
 
-// Set this to your deployed backend URL (e.g., "https://your-api.com")
 const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000"
 
 const reactLiveScope = {
   React,
-  ...React,
+  useState: React.useState,
+  useEffect: React.useEffect,
+  useCallback: React.useCallback,
+  useMemo: React.useMemo,
+  useRef: React.useRef,
+  useContext: React.useContext,
+  useReducer: React.useReducer,
+  createElement: React.createElement,
+  Fragment: React.Fragment,
+  Component: React.Component,
+  createContext: React.createContext,
+  forwardRef: React.forwardRef,
+  memo: React.memo,
+  Children: React.Children,
+  cloneElement: React.cloneElement,
+  isValidElement: React.isValidElement,
 }
 
 function normalizeGeneratedCode(raw: string): string {
@@ -44,11 +59,13 @@ function normalizeGeneratedCode(raw: string): string {
   code = code.replace(/export\s+default\s+function\s+GeneratedComponent\s*\(/, "function GeneratedComponent(")
   code = code.replace(/export\s+default\s+/g, "")
 
-  code = code.replace(/\buseState\b(?!\s*:)/g, "React.useState")
-  code = code.replace(/\buseEffect\b(?!\s*:)/g, "React.useEffect")
-  code = code.replace(/\buseCallback\b(?!\s*:)/g, "React.useCallback")
-  code = code.replace(/\buseMemo\b(?!\s*:)/g, "React.useMemo")
-  code = code.replace(/\buseRef\b(?!\s*:)/g, "React.useRef")
+  code = code.replace(/(?<!React\.)\buseState\b/g, "React.useState")
+  code = code.replace(/(?<!React\.)\buseEffect\b/g, "React.useEffect")
+  code = code.replace(/(?<!React\.)\buseCallback\b/g, "React.useCallback")
+  code = code.replace(/(?<!React\.)\buseMemo\b/g, "React.useMemo")
+  code = code.replace(/(?<!React\.)\buseRef\b/g, "React.useRef")
+  code = code.replace(/(?<!React\.)\buseContext\b/g, "React.useContext")
+  code = code.replace(/(?<!React\.)\buseReducer\b/g, "React.useReducer")
 
   return code.trim()
 }
