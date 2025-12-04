@@ -5,24 +5,30 @@ import { useState, useEffect, useCallback, useMemo, type ChangeEvent } from "rea
 import { LiveProvider, LivePreview, LiveError } from "react-live"
 import Editor from "@monaco-editor/react"
 import { motion, AnimatePresence } from "framer-motion"
-import { Sparkles, Upload, ImageIcon, Undo2, Redo2, Save, Moon, Sun, X, AlertTriangle, Settings } from "lucide-react"
+import { Sparkles, Upload, ImageIcon, Undo2, Redo2, Save, Moon, Sun, X, AlertTriangle } from "lucide-react"
 
 // Priority: 1. Runtime config, 2. Build-time env var, 3. localhost fallback
 const getApiBaseUrl = (): string => {
-  // Check for runtime config (can be set via window object)
+  // 1. Check localStorage first (saved user config)
+  if (typeof window !== "undefined") {
+    const savedUrl = localStorage.getItem("apiUrl")
+    if (savedUrl) {
+      return savedUrl
+    }
+  }
+  // 2. Check for runtime config via window object
   if (typeof window !== "undefined" && (window as any).__API_URL__) {
     return (window as any).__API_URL__
   }
-  // Check for Vite build-time env var
+  // 3. Check for Vite build-time env var
   if (import.meta.env.VITE_API_URL) {
     return import.meta.env.VITE_API_URL
   }
-  // Fallback to localhost for development
+  // 4. Fallback to localhost ONLY for local development
   return "http://localhost:8000"
 }
 
-const API_BASE_URL = getApiBaseUrl()
-const isLocalhost = API_BASE_URL.includes("localhost")
+const getIsLocalhost = () => getApiBaseUrl().includes("localhost")
 
 const reactLiveScope = {
   React,
@@ -103,17 +109,9 @@ const App: React.FC = () => {
     localStorage.setItem("ui-copilot-theme", theme)
   }, [theme])
 
-  useEffect(() => {
-    const savedUrl = localStorage.getItem("apiUrl")
-    if (savedUrl) {
-      ;(window as any).__API_URL__ = savedUrl
-    }
-  }, [])
-
   const handleSaveApiUrl = () => {
     if (customApiUrl.trim()) {
       localStorage.setItem("apiUrl", customApiUrl.trim())
-      ;(window as any).__API_URL__ = customApiUrl.trim()
       setShowSettings(false)
       window.location.reload() // Reload to apply new URL
     }
@@ -138,7 +136,7 @@ const App: React.FC = () => {
     setLoading(true)
     setPreviewError(null)
     try {
-      const res = await fetch(`${API_BASE_URL}/generate-ui`, {
+      const res = await fetch(`${getApiBaseUrl()}/generate-ui`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt }),
@@ -187,7 +185,7 @@ const App: React.FC = () => {
     setVisionLoading(true)
     setPreviewError(null)
     try {
-      const res = await fetch(`${API_BASE_URL}/vision-ui`, {
+      const res = await fetch(`${getApiBaseUrl()}/vision-ui`, {
         method: "POST",
         body: form,
       })
@@ -248,7 +246,7 @@ const App: React.FC = () => {
     <div
       className={`min-h-screen transition-colors duration-500 ${
         theme === "dark"
-          ? "bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-100"
+          ? "bg-gradient-to-br from-slate-950 via-slate-950 to-slate-950 text-slate-100"
           : "bg-gradient-to-br from-gray-50 via-white to-gray-100 text-slate-900"
       }`}
     >
@@ -270,45 +268,24 @@ const App: React.FC = () => {
         />
       </div>
 
-      <motion.header
-        initial={{ y: -20, opacity: 0 }}
-        animate={{ y: 0, opacity: 1 }}
+      <header
         className={`border-b ${
           theme === "dark" ? "border-slate-800/50" : "border-gray-200"
-        } p-4 flex justify-between items-center backdrop-blur-xl bg-opacity-80 relative z-10`}
+        } p-4 flex justify-between items-center backdrop-blur-xl`}
       >
-        <div className="flex items-center gap-3">
-          <motion.div
-            animate={{ rotate: [0, 360] }}
-            transition={{ duration: 20, repeat: Number.POSITIVE_INFINITY, ease: "linear" }}
-          >
-            <Sparkles className="w-6 h-6 text-indigo-500" />
-          </motion.div>
-          <h1 className="text-xl font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">
-            AI UI Copilot
-          </h1>
-        </div>
+        <motion.h1
+          initial={{ opacity: 0, x: -20 }}
+          animate={{ opacity: 1, x: 0 }}
+          className="text-xl font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent"
+        >
+          AI UI Copilot
+        </motion.h1>
         <div className="flex items-center gap-2">
-          {isLocalhost && (
-            <motion.div
-              initial={{ scale: 0 }}
-              animate={{ scale: 1 }}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-500/20 text-amber-400 text-xs"
-            >
-              <AlertTriangle className="w-4 h-4" />
-              <span>Using localhost API</span>
-            </motion.div>
+          {getIsLocalhost() && (
+            <span className="text-xs px-2 py-1 rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/30">
+              Using localhost
+            </span>
           )}
-          <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={() => setShowSettings(true)}
-            className={`p-2 rounded-lg ${
-              theme === "dark" ? "bg-slate-800 hover:bg-slate-700" : "bg-gray-200 hover:bg-gray-300"
-            }`}
-          >
-            <Settings className="w-5 h-5" />
-          </motion.button>
           {/* Theme toggle */}
           <motion.button
             whileHover={{ scale: 1.05 }}
@@ -323,7 +300,7 @@ const App: React.FC = () => {
             </motion.div>
           </motion.button>
         </div>
-      </motion.header>
+      </header>
 
       <AnimatePresence>
         {showSettings && (
@@ -361,7 +338,7 @@ const App: React.FC = () => {
                         : "bg-gray-100 border-gray-300 focus:border-indigo-500"
                     } outline-none transition-colors`}
                   />
-                  <p className="mt-2 text-xs text-slate-400">Current: {API_BASE_URL}</p>
+                  <p className="mt-2 text-xs text-slate-400">Current: {getApiBaseUrl()}</p>
                 </div>
                 <motion.button
                   whileHover={{ scale: 1.02 }}
